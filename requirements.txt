@@ -1,0 +1,4 @@
+torch
+torchvision
+kornia
+opencv-python
