@@ -1,6 +1,8 @@
 import kornia as K
 import torch
 import cv2
+import numpy as np
+import os
 
 # 1. 加载图片
 def load_image(path, size=(640, 480)):
@@ -17,8 +19,51 @@ def load_image(path, size=(640, 480)):
     img_gray = K.color.rgb_to_grayscale(img_tensor)
     return img_gray, img
 
+def apply_random_transform(img, mode='perspective'):
+    """
+    对图像进行随机变换以测试配准效果
+    mode: 'affine' (仿射) 或 'perspective' (透视)
+    """
+    h, w = img.shape[:2]
+    
+    if mode == 'affine':
+        # 随机旋转、缩放和平移
+        center = (w // 2, h // 2)
+        angle = np.random.uniform(-15, 15)  # 旋转 -15 到 15 度
+        scale = np.random.uniform(0.8, 1.2) # 缩放 0.8 到 1.2
+        M = cv2.getRotationMatrix2D(center, angle, scale)
+        # 添加一些随机平移
+        M[0, 2] += np.random.uniform(-20, 20)
+        M[1, 2] += np.random.uniform(-20, 20)
+        transformed = cv2.warpAffine(img, M, (w, h))
+    else:
+        # 随机透视变换 (移动四个角)
+        pts1 = np.float32([[0, 0], [w, 0], [0, h], [w, h]])
+        offset = 0.1 * min(h, w)
+        pts2 = pts1 + np.random.uniform(-offset, offset, size=pts1.shape).astype(np.float32)
+        M = cv2.getPerspectiveTransform(pts1, pts2)
+        transformed = cv2.warpPerspective(img, M, (w, h))
+        
+    return transformed
+
+# --- 测试模式：如果你想测试配准效果，可以取消下面三行的注释 ---
+# _, img1_cv = load_image("data/TNO_Image_Fusion_Dataset-master/Marne_11/Marne_11_IR.bmp")
+# img2_cv = apply_random_transform(img1_cv, mode='perspective')
+# img1, _ = load_image("data/TNO_Image_Fusion_Dataset-master/Marne_11/Marne_11_IR.bmp") # 重新获取 tensor
+# img2 = K.image_to_tensor(img2_cv, keepdim=False).float() / 255.0
+# img2 = K.color.rgb_to_grayscale(K.color.bgr_to_rgb(img2))
+# -------------------------------------------------------
+
 img1, img1_cv = load_image("data/TNO_Image_Fusion_Dataset-master/Marne_11/Marne_11_IR.bmp")
 img2, img2_cv = load_image("data/TNO_Image_Fusion_Dataset-master/Marne_11/Marne_11_REF.bmp")
+
+# --- 对 img2 进行随机变换以测试配准效果 ---
+print("正在对 img2 应用随机透视变换...")
+img2_cv = apply_random_transform(img2_cv, mode='perspective')
+# 重新将变换后的 img2_cv 转换为 tensor 供 LoFTR 使用
+img2_tensor = K.image_to_tensor(img2_cv, keepdim=False).float() / 255.0
+img2 = K.color.rgb_to_grayscale(K.color.bgr_to_rgb(img2_tensor))
+# ---------------------------------------
 
 # 2. 调用预训练的 LoFTR
 matcher = K.feature.LoFTR(pretrained='outdoor')
@@ -47,7 +92,6 @@ for pt0, pt1 in zip(mkpts0, mkpts1):
 # 5. 使用 RANSAC 估算单应性矩阵 (Homography)
 # mkpts0 是源图像点，mkpts1 是目标图像点
 # 我们找出一个 3x3 矩阵 H，使得 mkpts1 = H * mkpts0
-import numpy as np
 if len(mkpts0) > 4:
     H, mask = cv2.findHomography(mkpts0, mkpts1, cv2.RANSAC, 5.0)
     print("单应性矩阵 (3x3 Homography Matrix):")
@@ -60,7 +104,6 @@ if len(mkpts0) > 4:
 
     # 7. 效果展示与保存
     # 确保输出目录存在
-    import os
     output_dir = "output"
     os.makedirs(output_dir, exist_ok=True)
 
