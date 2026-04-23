@@ -9,6 +9,18 @@
 - `output/`: 自动生成的目录，存放配准后的结果图和匹配可视化图。
 - `requirements.txt`: 项目所需的 Python 依赖包。
 
+## 数据集说明
+
+本项目使用了 **TNO Image Fusion Dataset**。
+
+- **数据集来源**: [yanyanchun/TNO_Image_Fusion_Dataset](https://github.com/yanyanchun/TNO_Image_Fusion_Dataset)
+- **数据准备**: 
+    1. 访问上述 GitHub 链接并下载数据集。
+    2. 在项目根目录下创建 `data/` 文件夹。
+    3. 将下载的数据集解压并放入 `data/` 目录下，确保路径结构如：`data/TNO_Image_Fusion_Dataset-master/...`。
+
+> **注意**: `data/` 文件夹已被添加到 `.gitignore` 中，不会被 Git 追踪。
+
 ## 环境配置与安装
 
 请按照以下步骤配置开发环境：
