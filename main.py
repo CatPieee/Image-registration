@@ -4,6 +4,20 @@ import cv2
 import numpy as np
 import os
 import json
+import random
+
+# 固定随机种子以保证结果可复现
+def set_seed(seed=0):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+set_seed(0)
 
 # 1. 加载图片
 def load_image(path, size=(640, 480)):
@@ -74,6 +88,39 @@ def run_sift_matching(img1_cv, img2_cv):
         
     return len(good_matches), int(inliers)
 
+def save_comparison_result(img1_cv, img2_cv_warped, mkpts0, mkpts1, H, output_path, title_prefix):
+    """
+    生成 3 倍宽度的对比图：左&中是匹配连线，右边是配准结果
+    """
+    h, w = img1_cv.shape[:2]
+    
+    # 创建 3 倍宽度的画布
+    canvas = np.zeros((h, w * 3, 3), dtype=np.uint8)
+    
+    # 左和中：原始匹配图
+    vis_match = cv2.hconcat([img1_cv, img2_cv_warped])
+    if mkpts0 is not None and mkpts1 is not None:
+        for pt0, pt1 in zip(mkpts0, mkpts1):
+            cv2.line(vis_match, (int(pt0[0]), int(pt0[1])), (int(pt1[0] + w), int(pt1[1])), (0, 255, 0), 1)
+    
+    canvas[:, :w*2] = vis_match
+    
+    # 右：配准结果 (Alpha Blending)
+    if H is not None:
+        img1_registered = cv2.warpPerspective(img1_cv, H, (w, h))
+        blended = cv2.addWeighted(img1_registered, 0.5, img2_cv_warped, 0.5, 0)
+        canvas[:, w*2:] = blended
+    else:
+        # 如果配准失败，显示黑色并标注文字
+        cv2.putText(canvas, "Registration Failed", (w*2 + 20, h//2), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
+
+    # 添加标题标注
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(canvas, f"{title_prefix}: Correspondence", (20, 30), font, 0.8, (255, 255, 255), 2)
+    cv2.putText(canvas, f"{title_prefix}: Registration", (w*2 + 20, 30), font, 0.8, (255, 255, 255), 2)
+    
+    cv2.imwrite(output_path, canvas)
+
 # --- 主程序逻辑 ---
 def main():
     output_dir = "output"
@@ -112,8 +159,10 @@ def main():
 
     print(f"开始批量实验，共 {len(image_pairs)} 个图像对...")
     
-    matcher = K.feature.LoFTR(pretrained='outdoor')
-
+    # 初始化模型
+    print("正在加载 LoFTR 模型...")
+    loftr_matcher = K.feature.LoFTR(pretrained='outdoor')
+    
     for pair in image_pairs:
         name = pair["name"]
         ir_path = pair["ir"]
@@ -134,22 +183,24 @@ def main():
         img2_tensor = K.image_to_tensor(img2_cv_warped, keepdim=False).float() / 255.0
         img2_loftr_warped = K.color.rgb_to_grayscale(K.color.bgr_to_rgb(img2_tensor))
 
-        # 运行 LoFTR
+        # 1. 运行 LoFTR
+        print("运行 LoFTR 匹配...")
         input_dict = {"image0": img1_loftr, "image1": img2_loftr_warped}
         with torch.no_grad():
-            results = matcher(input_dict)
+            results = loftr_matcher(input_dict)
         
-        mkpts0 = results['keypoints0'].cpu().numpy()
-        mkpts1 = results['keypoints1'].cpu().numpy()
+        mkpts0_loftr = results['keypoints0'].cpu().numpy()
+        mkpts1_loftr = results['keypoints1'].cpu().numpy()
         
-        loftr_matches = len(mkpts0)
+        loftr_matches = len(mkpts0_loftr)
         loftr_inliers = 0
-        H = None
+        H_loftr = None
         if loftr_matches > 4:
-            H, mask = cv2.findHomography(mkpts0, mkpts1, cv2.RANSAC, 5.0)
+            H_loftr, mask = cv2.findHomography(mkpts0_loftr, mkpts1_loftr, cv2.RANSAC, 5.0)
             loftr_inliers = int(np.sum(mask)) if mask is not None else 0
 
-        # 运行 SIFT (Baseline)
+        # 2. 运行 SIFT (Baseline)
+        print("运行 SIFT 匹配 (Baseline)...")
         sift_matches, sift_inliers = run_sift_matching(img1_cv, img2_cv_warped)
 
         # 保存统计数据
@@ -158,17 +209,15 @@ def main():
             "SIFT": {"matches": sift_matches, "inliers": sift_inliers}
         }
 
-        # 保存可视化图像
-        h, w = img1_cv.shape[:2]
-        vis_img = cv2.hconcat([img1_cv, img2_cv_warped])
-        for pt0, pt1 in zip(mkpts0, mkpts1):
-            cv2.line(vis_img, (int(pt0[0]), int(pt0[1])), (int(pt1[0] + w), int(pt1[1])), (0, 255, 0), 1)
-        cv2.imwrite(os.path.join(pair_output_dir, "loftr_matches.png"), vis_img)
-
-        if H is not None:
-            img1_registered = cv2.warpPerspective(img1_cv, H, (w, h))
-            blended = cv2.addWeighted(img1_registered, 0.5, img2_cv_warped, 0.5, 0)
-            cv2.imwrite(os.path.join(pair_output_dir, "registration_result.png"), blended)
+        # 保存 3 倍宽度的可视化对比图
+        print(f"正在保存可视化结果至 {pair_output_dir}...")
+        save_comparison_result(img1_cv, img2_cv_warped, mkpts0_loftr, mkpts1_loftr, H_loftr, 
+                               os.path.join(pair_output_dir, "loftr_full_result.png"), "LoFTR")
+        
+        # 记录 SIFT 的简单匹配结果（SIFT 通常连点都对不上，所以只存一个简单的）
+        vis_sift = cv2.hconcat([img1_cv, img2_cv_warped])
+        cv2.putText(vis_sift, f"SIFT Inliers: {sift_inliers}", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        cv2.imwrite(os.path.join(pair_output_dir, "sift_matches_baseline.png"), vis_sift)
 
     # 保存所有统计结果
     with open(os.path.join(output_dir, "stats.json"), "w") as f:
