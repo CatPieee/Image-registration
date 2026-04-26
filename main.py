@@ -7,7 +7,7 @@ import json
 import random
 
 # 固定随机种子以保证结果可复现
-def set_seed(seed=0):
+def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -17,7 +17,7 @@ def set_seed(seed=0):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-set_seed(0)
+set_seed(42)
 
 # 1. 加载图片
 def load_image(path, size=(640, 480)):
